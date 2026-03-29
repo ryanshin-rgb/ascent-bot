@@ -43,6 +43,21 @@ def get_calendar_events():
     except Exception as e:
         return f"캘린더 조회 실패: {e}"
 
+def add_calendar_event(title, date_str, time_str="10:00"):
+    try:
+        service = build('calendar', 'v3', credentials=get_creds())
+        start = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        end = start + timedelta(hours=1)
+        event = {
+            'summary': title,
+            'start': {'dateTime': start.isoformat(), 'timeZone': 'Asia/Seoul'},
+            'end': {'dateTime': end.isoformat(), 'timeZone': 'Asia/Seoul'},
+        }
+        service.events().insert(calendarId='primary', body=event).execute()
+        return f"일정 추가 완료: {title} ({date_str} {time_str})"
+    except Exception as e:
+        return f"일정 추가 실패: {e}"
+
 def search_sheets(keyword):
     try:
         drive = build('drive', 'v3', credentials=get_creds())
@@ -115,14 +130,13 @@ def search_notion(keyword):
         output = []
         for page in pages:
             title = ""
-            if page['object'] == 'page':
-                props = page.get('properties', {})
-                for prop in props.values():
-                    if prop.get('type') == 'title':
-                        titles = prop.get('title', [])
-                        if titles:
-                            title = titles[0].get('plain_text', '')
-                            break
+            props = page.get('properties', {})
+            for prop in props.values():
+                if prop.get('type') == 'title':
+                    titles = prop.get('title', [])
+                    if titles:
+                        title = titles[0].get('plain_text', '')
+                        break
             if not title:
                 title = page.get('url', '제목없음')
             output.append(f"- {title}")
@@ -141,7 +155,8 @@ AGENTS = {
 
 MASTER_PROMPT = """당신은 어센트스포츠(Ascent Sports)의 총괄 비서 AI입니다. 대표 Ryan Shin을 보좌합니다.
 회사: 스포츠 마케팅, 선수 매니지먼트. 앰버서더: 이강인. 클라이언트: 바이메이더. 목표: Series A 투자 유치.
-답변 규칙: 한국어로만, 짧고 핵심만, 마크다운 기호 절대 사용 금지"""
+답변 규칙: 한국어로만, 짧고 핵심만, 마크다운 기호 절대 사용 금지
+캘린더 일정 추가 요청시: 날짜(YYYY-MM-DD)와 시간(HH:MM)과 제목을 파악해서 add_calendar_event 함수로 처리했다고 알려줘"""
 
 conversation_history = {}
 
@@ -159,7 +174,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     agent_name, system_prompt = get_agent(user_message)
     extra = ""
 
-    if any(w in user_message for w in ["일정", "스케줄", "미팅", "캘린더"]) and "노션" not in user_message:
+    if any(w in user_message for w in ["일정추가", "일정 추가", "등록", "캘린더에 추가"]):
+        extra += f"\n\n[시스템: 캘린더 일정 추가 기능 사용 가능. 날짜와 시간을 파악해서 처리하세요.]"
+    elif any(w in user_message for w in ["일정", "스케줄", "미팅", "캘린더"]) and "노션" not in user_message:
         extra += f"\n\n[캘린더 일정]\n{get_calendar_events()}"
     if any(w in user_message for w in ["시트", "정산", "데이터", "현황", "목록", "파이프라인", "투자사"]):
         words = user_message.split()
@@ -174,12 +191,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             extra += f"\n\n[슬랙 최근 메시지]\n{get_all_slack_messages()}"
     if any(w in user_message for w in ["노션", "notion"]):
-        if any(w in user_message for w in ["할일", "업무", "미완료", "todo", "체크"]):
+        if any(w in user_message for w in ["할일", "업무", "미완료", "todo", "체크", "할 일"]):
             extra += f"\n\n[노션 미완료 업무]\n{get_ryan_todos()}"
         else:
             words = user_message.split()
             keyword = next((w for w in words if len(w) > 1 and w not in ["노션", "notion", "확인", "찾아", "검색", "알려줘"]), "")
             extra += f"\n\n[노션 검색 결과]\n{search_notion(keyword)}"
+
+    # 캘린더 일정 추가 처리
+    if any(w in user_message for w in ["일정추가", "일정 추가", "등록해줘", "캘린더에 추가"]):
+        today = datetime.now()
+        date_str = today.strftime("%Y-%m-%d")
+        time_str = "10:00"
+        import re
+        date_match = re.search(r'(\d{1,2})월\s*(\d{1,2})일', user_message)
+        if date_match:
+            month = int(date_match.group(1))
+            day = int(date_match.group(2))
+            date_str = f"{today.year}-{month:02d}-{day:02d}"
+        time_match = re.search(r'(\d{1,2})시', user_message)
+        if time_match:
+            hour = int(time_match.group(1))
+            if "오후" in user_message and hour < 12:
+                hour += 12
+            time_str = f"{hour:02d}:00"
+        title = user_message
+        result = add_calendar_event(title, date_str, time_str)
+        extra += f"\n\n[캘린더 처리 결과]\n{result}"
 
     conversation_history[user_id].append({"role": "user", "content": user_message + extra})
     if len(conversation_history[user_id]) > 20:
