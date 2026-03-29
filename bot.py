@@ -1,4 +1,5 @@
 import os
+import json
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 import anthropic
@@ -8,11 +9,20 @@ from datetime import datetime, timedelta
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
+GOOGLE_TOKEN = os.environ.get("GOOGLE_TOKEN")
 
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 
 def get_creds():
-    return Credentials.from_authorized_user_file('token.json')
+    token_data = json.loads(GOOGLE_TOKEN)
+    return Credentials(
+        token=token_data["token"],
+        refresh_token=token_data["refresh_token"],
+        token_uri=token_data["token_uri"],
+        client_id=token_data["client_id"],
+        client_secret=token_data["client_secret"],
+        scopes=token_data["scopes"]
+    )
 
 def get_calendar_events():
     try:
@@ -23,8 +33,8 @@ def get_calendar_events():
         if not events:
             return "이번주 일정 없음"
         return "\n".join([f"{e['start'].get('dateTime', e['start'].get('date'))}: {e['summary']}" for e in events])
-    except:
-        return "캘린더 조회 실패"
+    except Exception as e:
+        return f"캘린더 조회 실패: {e}"
 
 def search_sheets(keyword):
     try:
