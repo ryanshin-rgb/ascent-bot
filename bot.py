@@ -14,6 +14,7 @@ CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 GOOGLE_TOKEN = os.environ.get("GOOGLE_TOKEN")
 SLACK_TOKEN = os.environ.get("SLACK_TOKEN")
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
+RYAN_DB_ID = "d9c57c12ad29447985c44baab2a94f42"
 
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 slack = WebClient(token=SLACK_TOKEN)
@@ -87,6 +88,24 @@ def send_slack_message(channel, text):
     except Exception as e:
         return f"슬랙 전송 실패: {e}"
 
+def get_ryan_todos():
+    try:
+        results = notion.databases.query(
+            database_id=RYAN_DB_ID,
+            filter={"property": "완료여부", "checkbox": {"equals": False}}
+        )
+        items = []
+        for r in results['results']:
+            props = r.get('properties', {})
+            for k, v in props.items():
+                if v.get('type') == 'title':
+                    titles = v.get('title', [])
+                    if titles:
+                        items.append(titles[0].get('plain_text', ''))
+        return "\n".join(items) if items else "미완료 업무 없음"
+    except Exception as e:
+        return f"노션 조회 실패: {e}"
+
 def search_notion(keyword):
     try:
         results = notion.search(query=keyword, page_size=5)
@@ -110,27 +129,6 @@ def search_notion(keyword):
         return "\n".join(output)
     except Exception as e:
         return f"노션 검색 실패: {e}"
-
-def get_notion_page(keyword):
-    try:
-        results = notion.search(query=keyword, page_size=1)
-        pages = results.get('results', [])
-        if not pages:
-            return f"'{keyword}' 페이지 없음"
-        page = pages[0]
-        page_id = page['id']
-        blocks = notion.blocks.children.list(block_id=page_id)
-        content = []
-        for block in blocks.get('results', [])[:20]:
-            block_type = block.get('type', '')
-            block_data = block.get(block_type, {})
-            rich_text = block_data.get('rich_text', [])
-            text = ''.join([t.get('plain_text', '') for t in rich_text])
-            if text:
-                content.append(text)
-        return "\n".join(content) if content else "내용 없음"
-    except Exception as e:
-        return f"노션 페이지 조회 실패: {e}"
 
 AGENTS = {
     "schedule": {"keywords": ["일정", "스케줄", "미팅", "캘린더", "약속", "행사", "촬영"], "prompt": "당신은 어센트스포츠 스케줄 전담 에이전트입니다. 한국어로만, 짧고 핵심만, 마크다운 기호 절대 사용 금지."},
@@ -161,7 +159,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     agent_name, system_prompt = get_agent(user_message)
     extra = ""
 
-    if any(w in user_message for w in ["일정", "스케줄", "미팅", "캘린더"]):
+    if any(w in user_message for w in ["일정", "스케줄", "미팅", "캘린더"]) and "노션" not in user_message:
         extra += f"\n\n[캘린더 일정]\n{get_calendar_events()}"
     if any(w in user_message for w in ["시트", "정산", "데이터", "현황", "목록", "파이프라인", "투자사"]):
         words = user_message.split()
@@ -176,11 +174,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             extra += f"\n\n[슬랙 최근 메시지]\n{get_all_slack_messages()}"
     if any(w in user_message for w in ["노션", "notion"]):
-        words = user_message.split()
-        keyword = next((w for w in words if len(w) > 1 and w not in ["노션", "notion", "확인", "찾아", "검색"]), "")
-        if any(w in user_message for w in ["내용", "확인", "열어"]):
-            extra += f"\n\n[노션 페이지 내용]\n{get_notion_page(keyword)}"
+        if any(w in user_message for w in ["할일", "업무", "미완료", "todo", "체크"]):
+            extra += f"\n\n[노션 미완료 업무]\n{get_ryan_todos()}"
         else:
+            words = user_message.split()
+            keyword = next((w for w in words if len(w) > 1 and w not in ["노션", "notion", "확인", "찾아", "검색", "알려줘"]), "")
             extra += f"\n\n[노션 검색 결과]\n{search_notion(keyword)}"
 
     conversation_history[user_id].append({"role": "user", "content": user_message + extra})
@@ -202,7 +200,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("봇 시작됨! 노션 연동 완료")
+    print("봇 시작됨!")
     app.run_polling()
 
 if __name__ == "__main__":
