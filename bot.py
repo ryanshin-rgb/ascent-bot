@@ -7,14 +7,17 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta
 from slack_sdk import WebClient
+from notion_client import Client as NotionClient
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 GOOGLE_TOKEN = os.environ.get("GOOGLE_TOKEN")
 SLACK_TOKEN = os.environ.get("SLACK_TOKEN")
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
 slack = WebClient(token=SLACK_TOKEN)
+notion = NotionClient(auth=NOTION_TOKEN)
 
 def get_creds():
     token_data = json.loads(GOOGLE_TOKEN)
@@ -61,16 +64,11 @@ def search_sheets(keyword):
 def get_all_slack_messages():
     try:
         result = slack.conversations_list(types="public_channel,private_channel")
-        channels = result.get("channels", [])
-        for ch in channels:
-            try:
-                slack.conversations_join(channel=ch["id"])
-            except:
-                pass
         channels = result.get('channels', [])
         output = []
         for ch in channels[:5]:
             try:
+                slack.conversations_join(channel=ch['id'])
                 history = slack.conversations_history(channel=ch['id'], limit=5)
                 messages = history.get('messages', [])
                 if messages:
@@ -88,6 +86,51 @@ def send_slack_message(channel, text):
         return f"#{channel} 채널에 메시지 전송 완료"
     except Exception as e:
         return f"슬랙 전송 실패: {e}"
+
+def search_notion(keyword):
+    try:
+        results = notion.search(query=keyword, page_size=5)
+        pages = results.get('results', [])
+        if not pages:
+            return f"'{keyword}' 관련 노션 페이지 없음"
+        output = []
+        for page in pages:
+            title = ""
+            if page['object'] == 'page':
+                props = page.get('properties', {})
+                for prop in props.values():
+                    if prop.get('type') == 'title':
+                        titles = prop.get('title', [])
+                        if titles:
+                            title = titles[0].get('plain_text', '')
+                            break
+            if not title:
+                title = page.get('url', '제목없음')
+            output.append(f"- {title}")
+        return "\n".join(output)
+    except Exception as e:
+        return f"노션 검색 실패: {e}"
+
+def get_notion_page(keyword):
+    try:
+        results = notion.search(query=keyword, page_size=1)
+        pages = results.get('results', [])
+        if not pages:
+            return f"'{keyword}' 페이지 없음"
+        page = pages[0]
+        page_id = page['id']
+        blocks = notion.blocks.children.list(block_id=page_id)
+        content = []
+        for block in blocks.get('results', [])[:20]:
+            block_type = block.get('type', '')
+            block_data = block.get(block_type, {})
+            rich_text = block_data.get('rich_text', [])
+            text = ''.join([t.get('plain_text', '') for t in rich_text])
+            if text:
+                content.append(text)
+        return "\n".join(content) if content else "내용 없음"
+    except Exception as e:
+        return f"노션 페이지 조회 실패: {e}"
 
 AGENTS = {
     "schedule": {"keywords": ["일정", "스케줄", "미팅", "캘린더", "약속", "행사", "촬영"], "prompt": "당신은 어센트스포츠 스케줄 전담 에이전트입니다. 한국어로만, 짧고 핵심만, 마크다운 기호 절대 사용 금지."},
@@ -132,6 +175,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             extra += f"\n\n[슬랙 전송 결과]\n{send_slack_message(channel, text)}"
         else:
             extra += f"\n\n[슬랙 최근 메시지]\n{get_all_slack_messages()}"
+    if any(w in user_message for w in ["노션", "notion"]):
+        words = user_message.split()
+        keyword = next((w for w in words if len(w) > 1 and w not in ["노션", "notion", "확인", "찾아", "검색"]), "")
+        if any(w in user_message for w in ["내용", "확인", "열어"]):
+            extra += f"\n\n[노션 페이지 내용]\n{get_notion_page(keyword)}"
+        else:
+            extra += f"\n\n[노션 검색 결과]\n{search_notion(keyword)}"
 
     conversation_history[user_id].append({"role": "user", "content": user_message + extra})
     if len(conversation_history[user_id]) > 20:
@@ -152,7 +202,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("봇 시작됨!")
+    print("봇 시작됨! 노션 연동 완료")
     app.run_polling()
 
 if __name__ == "__main__":
