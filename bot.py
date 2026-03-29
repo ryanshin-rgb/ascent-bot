@@ -6,12 +6,15 @@ import anthropic
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta
+from slack_sdk import WebClient
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 GOOGLE_TOKEN = os.environ.get("GOOGLE_TOKEN")
+SLACK_TOKEN = os.environ.get("SLACK_TOKEN")
 
 client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+slack = WebClient(token=SLACK_TOKEN)
 
 def get_creds():
     token_data = json.loads(GOOGLE_TOKEN)
@@ -54,6 +57,34 @@ def search_sheets(keyword):
         return "\n\n".join(output)
     except Exception as e:
         return f"시트 검색 실패: {e}"
+
+def get_slack_messages(channel_name, limit=10):
+    try:
+        channels = slack.conversations_list().get('channels', [])
+        channel = next((c for c in channels if c['name'] == channel_name.replace('#', '')), None)
+        if not channel:
+            return f"#{channel_name} 채널 없음"
+        history = slack.conversations_history(channel=channel['id'], limit=limit)
+        messages = history.get('messages', [])
+        if not messages:
+            return "메시지 없음"
+        return "\n".join([f"{m.get('text', '')}" for m in messages[:10]])
+    except Exception as e:
+        return f"슬랙 조회 실패: {e}"
+
+def send_slack_message(channel, text):
+    try:
+        slack.chat_postMessage(channel=channel, text=text)
+        return "슬랙 메시지 전송 완료"
+    except Exception as e:
+        return f"슬랙 전송 실패: {e}"
+
+def get_slack_channels():
+    try:
+        channels = slack.conversations_list().get('channels', [])
+        return "\n".join([f"#{c['name']}" for c in channels[:20]])
+    except Exception as e:
+        return f"채널 목록 조회 실패: {e}"
 
 AGENTS = {
     "schedule": {
@@ -101,21 +132,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conversation_history[user_id] = []
     agent_name, system_prompt = get_agent(user_message)
     extra = ""
+    
     if any(w in user_message for w in ["일정", "스케줄", "미팅", "캘린더"]):
         extra += f"\n\n[캘린더 일정]\n{get_calendar_events()}"
     if any(w in user_message for w in ["시트", "정산", "데이터", "현황", "목록", "파이프라인", "투자사"]):
         words = user_message.split()
         keyword = next((w for w in words if len(w) > 1), "")
         extra += f"\n\n[구글 시트 데이터]\n{search_sheets(keyword)}"
+    if "슬랙 채널" in user_message or "채널 목록" in user_message:
+        extra += f"\n\n[슬랙 채널 목록]\n{get_slack_channels()}"
+    if "슬랙" in user_message and any(w in user_message for w in ["확인", "읽어", "뭐라고", "메시지"]):
+        words = user_message.split()
+        channel = next((w for w in words if w.startswith('#')), 'general')
+        extra += f"\n\n[슬랙 메시지]\n{get_slack_messages(channel)}"
+    if "슬랙" in user_message and any(w in user_message for w in ["보내", "전송", "알려줘"]):
+        pass
+
     conversation_history[user_id].append({"role": "user", "content": user_message + extra})
     if len(conversation_history[user_id]) > 20:
         conversation_history[user_id] = conversation_history[user_id][-20:]
+    
     response = client.messages.create(
         model="claude-sonnet-4-5",
         max_tokens=1000,
         system=system_prompt,
         messages=conversation_history[user_id]
     )
+    
     assistant_message = response.content[0].text
     conversation_history[user_id].append({"role": "assistant", "content": assistant_message})
     agent_labels = {"schedule": "스케줄", "finance": "재무", "sales": "영업", "marketing": "마케팅", "ambassador": "앰버서더", "ir": "IR", "master": "총괄"}
@@ -125,7 +168,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("봇 시작됨!")
+    print("봇 시작됨! 슬랙 연동 완료")
     app.run_polling()
 
 if __name__ == "__main__":
