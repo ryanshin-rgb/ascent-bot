@@ -141,7 +141,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         extra += f"\n\n[구글 시트 데이터]\n{search_sheets(keyword)}"
     if "슬랙 채널" in user_message or "채널 목록" in user_message:
         extra += f"\n\n[슬랙 채널 목록]\n{get_slack_channels()}"
-    if "슬랙" in user_message and any(w in user_message for w in ["확인", "읽어", "뭐라고", "메시지"]):
+    if "슬랙" in user_message or "slack" in user_message.lower():
         words = user_message.split()
         channel = next((w for w in words if w.startswith('#')), 'general')
         extra += f"\n\n[슬랙 메시지]\n{get_slack_messages(channel)}"
