@@ -61,6 +61,12 @@ def search_sheets(keyword):
 def get_all_slack_messages():
     try:
         result = slack.conversations_list(types="public_channel,private_channel")
+        channels = result.get("channels", [])
+        for ch in channels:
+            try:
+                slack.conversations_join(channel=ch["id"])
+            except:
+                pass
         channels = result.get('channels', [])
         output = []
         for ch in channels[:5]:
